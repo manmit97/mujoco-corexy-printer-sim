@@ -37,9 +37,9 @@
     <texture name="tex_logo"   type="2d" file="assets/side_logo.png"/>
     <texture name="tex_badge"  type="2d" file="assets/front_badge.png"/>
     <texture name="tex_screen" type="2d" file="assets/screen.png"/>
-    <material name="mat_logo"   texture="tex_logo"   texuniform="true" rgba="1 1 1 1" emission="0.6"/>
-    <material name="mat_badge"  texture="tex_badge"  texuniform="true" rgba="1 1 1 1" emission="0.45"/>
-    <material name="mat_screen" texture="tex_screen" texuniform="true" rgba="1 1 1 1" emission="0.85"/>
+    <material name="mat_logo"   texture="tex_logo"   rgba="1 1 1 1" emission="0.15"/>
+    <material name="mat_badge"  texture="tex_badge"  rgba="1 1 1 1" emission="0.2"/>
+    <material name="mat_screen" texture="tex_screen" rgba="1 1 1 1" emission="0.45"/>
     <!-- Painted enclosure (X1E-class gray) -->
     <material name="mat_shell"  rgba="0.42 0.43 0.45 1" shininess="0.45" specular="0.35"/>
     <material name="mat_shell_dark" rgba="0.10 0.10 0.11 1" shininess="0.3" specular="0.2"/>
