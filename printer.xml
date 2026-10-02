@@ -34,6 +34,18 @@
   <!--  ASSETS — materials & meshes                                        -->
   <!-- ════════════════════════════════════════════════════════════════════ -->
   <asset>
+    <texture name="tex_logo"   type="2d" file="assets/side_logo.png"/>
+    <texture name="tex_badge"  type="2d" file="assets/front_badge.png"/>
+    <texture name="tex_screen" type="2d" file="assets/screen.png"/>
+    <material name="mat_logo"   texture="tex_logo"   texuniform="true" rgba="1 1 1 1" emission="0.6"/>
+    <material name="mat_badge"  texture="tex_badge"  texuniform="true" rgba="1 1 1 1" emission="0.45"/>
+    <material name="mat_screen" texture="tex_screen" texuniform="true" rgba="1 1 1 1" emission="0.85"/>
+    <!-- Painted enclosure (X1E-class gray) -->
+    <material name="mat_shell"  rgba="0.42 0.43 0.45 1" shininess="0.45" specular="0.35"/>
+    <material name="mat_shell_dark" rgba="0.10 0.10 0.11 1" shininess="0.3" specular="0.2"/>
+    <!-- Chamber glass and AMS dome -->
+    <material name="mat_glass"  rgba="0.82 0.86 0.88 0.10" shininess="0.9" specular="0.6"/>
+    <material name="mat_dome"   rgba="0.80 0.86 0.90 0.16" shininess="0.9" specular="0.5"/>
     <!-- Frame / structural aluminium -->
     <material name="mat_frame"    rgba="0.25 0.25 0.28 1"  shininess="0.3" specular="0.4"/>
     <!-- Anodised black motion components -->
@@ -46,16 +58,15 @@
     <material name="mat_nozzle"   rgba="0.72 0.45 0.20 1"  shininess="0.9" specular="0.8"/>
     <!-- Deposited filament (PLA-like) -->
     <material name="mat_filament" rgba="0.1 0.6 0.95 1"    shininess="0.3" specular="0.2"/>
-    <!-- Build-volume bounding wireframe (transparent) -->
-    <material name="mat_volume"   rgba="0.3 0.7 1.0 0.08"  shininess="0.0" specular="0.0"/>
     <!-- LED accent strip -->
     <material name="mat_led"      rgba="0.95 0.95 1.0 0.6" emission="0.8"/>
-    <!-- Filament spool — vibrant red PLA -->
-    <material name="mat_spool"    rgba="0.9 0.1 0.1 1"     shininess="0.5" specular="0.4"/>
+    <!-- AMS spool colours. The orange spool is the one feeding the toolhead. -->
+    <material name="mat_spool_g"  rgba="0.18 0.62 0.28 1" shininess="0.5" specular="0.35"/>
+    <material name="mat_spool_c"  rgba="0.12 0.55 0.52 1" shininess="0.5" specular="0.35"/>
+    <material name="mat_spool_b"  rgba="0.18 0.38 0.78 1" shininess="0.5" specular="0.35"/>
+    <material name="mat_spool"    rgba="0.90 0.28 0.10 1" shininess="0.5" specular="0.4"/>
     <!-- Spool holder bracket — dark metal -->
     <material name="mat_spool_bracket" rgba="0.18 0.18 0.20 1" shininess="0.4" specular="0.3"/>
-    <!-- Printed object — matching red -->
-    <material name="mat_print_obj" rgba="0.88 0.12 0.12 1" shininess="0.35" specular="0.25"/>
     <!-- Filament strand (thin red) -->
     <material name="mat_strand"   rgba="0.9 0.1 0.1 0.85" shininess="0.3" specular="0.2"/>
   </asset>
@@ -106,58 +117,116 @@
       <geom name="top_beam_right" type="box" size="0.010 0.148 0.010"
             pos=" 0.16 0 0.39" mass="0.2" material="mat_frame"/>
 
-      <!-- LED accent strip (front) -->
-      <geom name="led_strip" type="box" size="0.14 0.002 0.003"
-            pos="0 -0.162 0.37" material="mat_led" contype="0" conaffinity="0"/>
-
-      <!-- Build-volume bounding box (visual only) -->
-      <geom name="build_volume" type="box" size="0.128 0.128 0.128"
-            pos="0 0 0.138" material="mat_volume"
-            contype="0" conaffinity="0" group="1"/>
+      <!-- Chamber light bar, inside the top of the door opening -->
+      <geom name="led_strip" type="box" size="0.15 0.004 0.004"
+            pos="0 -0.15 0.385" material="mat_led" contype="0" conaffinity="0"/>
 
       <!-- ─────────────────────────────────────────────────────────── -->
-      <!--  FILAMENT SPOOL & HOLDER (top-right of frame)               -->
+      <!--  ENCLOSURE — painted shell, glass door, screen, badge       -->
       <!-- ─────────────────────────────────────────────────────────── -->
-      <!-- Spool holder L-bracket (bolted to back-right pillar top) -->
-      <geom name="spool_bracket_vert" type="box" size="0.008 0.008 0.04"
-            pos="0.16 0.12 0.44" material="mat_spool_bracket"
-            contype="0" conaffinity="0"/>
-      <geom name="spool_bracket_horiz" type="box" size="0.04 0.008 0.005"
-            pos="0.16 0.12 0.485" material="mat_spool_bracket"
-            contype="0" conaffinity="0"/>
-      <!-- Spool axle (horizontal rod) -->
-      <geom name="spool_axle" type="cylinder" size="0.004 0.025"
-            pos="0.16 0.12 0.52" euler="1.5708 0 0"
-            material="mat_rail" contype="0" conaffinity="0"/>
-      <!-- Filament spool — main barrel -->
-      <geom name="spool_barrel" type="cylinder" size="0.035 0.018"
-            pos="0.16 0.12 0.52" euler="1.5708 0 0"
-            material="mat_spool" contype="0" conaffinity="0"/>
-      <!-- Spool flanges (left & right discs) -->
-      <geom name="spool_flange_L" type="cylinder" size="0.048 0.002"
-            pos="0.16 0.098 0.52" euler="1.5708 0 0"
-            material="mat_spool" contype="0" conaffinity="0"/>
-      <geom name="spool_flange_R" type="cylinder" size="0.048 0.002"
-            pos="0.16 0.142 0.52" euler="1.5708 0 0"
-            material="mat_spool" contype="0" conaffinity="0"/>
-      <!-- Spool hub (inner hole visual) -->
-      <geom name="spool_hub" type="cylinder" size="0.015 0.020"
-            pos="0.16 0.12 0.52" euler="1.5708 0 0"
-            rgba="0.6 0.08 0.08 1"
-            contype="0" conaffinity="0"/>
-      <!-- Site at spool filament exit point (for dynamic strand) -->
-      <site name="spool_exit_site" pos="0.16 0.10 0.48"
-            size="0.003" rgba="0.9 0.1 0.1 0.6" group="3"/>
+      <geom name="shell_left"  type="box" size="0.008 0.198 0.205"
+            pos="-0.208 0 0.210" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="shell_right" type="box" size="0.008 0.198 0.205"
+            pos=" 0.208 0 0.210" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="shell_back"  type="box" size="0.200 0.008 0.205"
+            pos="0 0.206 0.210" material="mat_shell" contype="0" conaffinity="0"/>
+      <!-- Top deck stops short of the rear so the feed tube can drop in -->
+      <geom name="shell_top" type="box" size="0.200 0.155 0.008"
+            pos="0 -0.030 0.418" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="shell_kick" type="box" size="0.216 0.214 0.012"
+            pos="0 0 0.012" material="mat_shell" contype="0" conaffinity="0"/>
 
-      <!-- Static filament guide tube (spool → frame top → near gantry) -->
-      <!-- Segment 1: spool exit down to frame top -->
-      <geom name="fil_guide_1" type="capsule" size="0.0015"
-            fromto="0.16 0.10 0.48  0.12 0.04 0.42"
-            material="mat_strand" contype="0" conaffinity="0"/>
-      <!-- Segment 2: across frame top toward centre -->
-      <geom name="fil_guide_2" type="capsule" size="0.0015"
-            fromto="0.12 0.04 0.42  0.04 0.0 0.40"
-            material="mat_strand" contype="0" conaffinity="0"/>
+      <!-- Door frame -->
+      <geom name="door_jamb_l" type="box" size="0.018 0.008 0.205"
+            pos="-0.182 -0.206 0.210" material="mat_shell_dark" contype="0" conaffinity="0"/>
+      <geom name="door_jamb_r" type="box" size="0.018 0.008 0.205"
+            pos=" 0.182 -0.206 0.210" material="mat_shell_dark" contype="0" conaffinity="0"/>
+      <geom name="door_lintel" type="box" size="0.164 0.008 0.016"
+            pos="0 -0.206 0.399" material="mat_shell_dark" contype="0" conaffinity="0"/>
+      <geom name="door_sill" type="box" size="0.164 0.008 0.028"
+            pos="0 -0.206 0.048" material="mat_shell_dark" contype="0" conaffinity="0"/>
+      <!-- Clear door. Low alpha so the chamber stays visible. -->
+      <geom name="door_glass" type="box" size="0.162 0.003 0.158"
+            pos="0 -0.198 0.220" material="mat_glass" contype="0" conaffinity="0"/>
+      <geom name="door_handle" type="box" size="0.006 0.006 0.028"
+            pos="0.145 -0.214 0.230" material="mat_shell" contype="0" conaffinity="0"/>
+
+      <!-- Front model badge -->
+      <geom name="front_badge" type="box" size="0.036 0.001 0.009"
+            pos="0.02 -0.216 0.408" material="mat_badge" contype="0" conaffinity="0"/>
+
+      <!-- Tilted touchscreen on the upper-left front -->
+      <geom name="screen_bezel" type="box" size="0.052 0.004 0.034"
+            pos="-0.145 -0.222 0.352" euler="0.55 0 0"
+            material="mat_shell_dark" contype="0" conaffinity="0"/>
+      <geom name="screen_face" type="box" size="0.046 0.001 0.029"
+            pos="-0.145 -0.242 0.362" euler="0.55 0 0"
+            material="mat_screen" contype="0" conaffinity="0"/>
+
+      <!-- Side logo plate, proud of the right wall -->
+      <geom name="side_logo" type="box" size="0.003 0.046 0.064"
+            pos="0.224 0.02 0.220" material="mat_logo" contype="0" conaffinity="0"/>
+
+      <!-- ─────────────────────────────────────────────────────────── -->
+      <!--  AMS — four spools seated in a bay under a clear dome       -->
+      <!--  The orange spool is the active feed.                       -->
+      <!-- ─────────────────────────────────────────────────────────── -->
+      <geom name="ams_body" type="box" size="0.200 0.105 0.026"
+            pos="0 0.01 0.452" material="mat_shell_dark" contype="0" conaffinity="0"/>
+      <geom name="ams_rim_f" type="box" size="0.200 0.006 0.005"
+            pos="0 -0.095 0.484" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="ams_rim_b" type="box" size="0.200 0.006 0.005"
+            pos="0  0.115 0.484" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="ams_rim_l" type="box" size="0.006 0.105 0.005"
+            pos="-0.200 0.01 0.484" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="ams_rim_r" type="box" size="0.006 0.105 0.005"
+            pos=" 0.200 0.01 0.484" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="ams_dome" type="ellipsoid" size="0.205 0.108 0.062"
+            pos="0 0.01 0.530" material="mat_dome" contype="0" conaffinity="0"/>
+
+      <!-- Axles run left–right, so each spool is seen edge-on from the door. -->
+      <!-- Green -->
+      <geom name="spool1_axle" type="cylinder" size="0.004 0.022" pos="-0.135 0.02 0.524" euler="0 1.5708 0" material="mat_rail" contype="0" conaffinity="0"/>
+      <geom name="spool1_roll_f" type="cylinder" size="0.006 0.012" pos="-0.135 -0.012 0.492" euler="0 1.5708 0" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="spool1_roll_b" type="cylinder" size="0.006 0.012" pos="-0.135  0.052 0.492" euler="0 1.5708 0" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="spool1_barrel" type="cylinder" size="0.026 0.014" pos="-0.135 0.02 0.524" euler="0 1.5708 0" material="mat_spool_g" contype="0" conaffinity="0"/>
+      <geom name="spool1_flange_f" type="cylinder" size="0.036 0.002" pos="-0.153 0.02 0.524" euler="0 1.5708 0" material="mat_spool_g" contype="0" conaffinity="0"/>
+      <geom name="spool1_flange_b" type="cylinder" size="0.036 0.002" pos="-0.117 0.02 0.524" euler="0 1.5708 0" material="mat_spool_g" contype="0" conaffinity="0"/>
+      <geom name="spool1_hub" type="cylinder" size="0.012 0.016" pos="-0.135 0.02 0.524" euler="0 1.5708 0" rgba="0.08 0.28 0.12 1" contype="0" conaffinity="0"/>
+      <geom name="feeder1" type="box" size="0.020 0.016 0.020" pos="-0.135 -0.055 0.502" material="mat_shell_dark" contype="0" conaffinity="0"/>
+
+      <!-- Teal -->
+      <geom name="spool2_axle" type="cylinder" size="0.004 0.022" pos="-0.045 0.02 0.524" euler="0 1.5708 0" material="mat_rail" contype="0" conaffinity="0"/>
+      <geom name="spool2_roll_f" type="cylinder" size="0.006 0.012" pos="-0.045 -0.012 0.492" euler="0 1.5708 0" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="spool2_roll_b" type="cylinder" size="0.006 0.012" pos="-0.045  0.052 0.492" euler="0 1.5708 0" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="spool2_barrel" type="cylinder" size="0.026 0.014" pos="-0.045 0.02 0.524" euler="0 1.5708 0" material="mat_spool_c" contype="0" conaffinity="0"/>
+      <geom name="spool2_flange_f" type="cylinder" size="0.036 0.002" pos="-0.063 0.02 0.524" euler="0 1.5708 0" material="mat_spool_c" contype="0" conaffinity="0"/>
+      <geom name="spool2_flange_b" type="cylinder" size="0.036 0.002" pos="-0.027 0.02 0.524" euler="0 1.5708 0" material="mat_spool_c" contype="0" conaffinity="0"/>
+      <geom name="spool2_hub" type="cylinder" size="0.012 0.016" pos="-0.045 0.02 0.524" euler="0 1.5708 0" rgba="0.06 0.24 0.22 1" contype="0" conaffinity="0"/>
+      <geom name="feeder2" type="box" size="0.020 0.016 0.020" pos="-0.045 -0.055 0.502" material="mat_shell_dark" contype="0" conaffinity="0"/>
+
+      <!-- Blue -->
+      <geom name="spool3_axle" type="cylinder" size="0.004 0.022" pos="0.045 0.02 0.524" euler="0 1.5708 0" material="mat_rail" contype="0" conaffinity="0"/>
+      <geom name="spool3_roll_f" type="cylinder" size="0.006 0.012" pos="0.045 -0.012 0.492" euler="0 1.5708 0" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="spool3_roll_b" type="cylinder" size="0.006 0.012" pos="0.045  0.052 0.492" euler="0 1.5708 0" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="spool3_barrel" type="cylinder" size="0.026 0.014" pos="0.045 0.02 0.524" euler="0 1.5708 0" material="mat_spool_b" contype="0" conaffinity="0"/>
+      <geom name="spool3_flange_f" type="cylinder" size="0.036 0.002" pos="0.027 0.02 0.524" euler="0 1.5708 0" material="mat_spool_b" contype="0" conaffinity="0"/>
+      <geom name="spool3_flange_b" type="cylinder" size="0.036 0.002" pos="0.063 0.02 0.524" euler="0 1.5708 0" material="mat_spool_b" contype="0" conaffinity="0"/>
+      <geom name="spool3_hub" type="cylinder" size="0.012 0.016" pos="0.045 0.02 0.524" euler="0 1.5708 0" rgba="0.08 0.16 0.36 1" contype="0" conaffinity="0"/>
+      <geom name="feeder3" type="box" size="0.020 0.016 0.020" pos="0.045 -0.055 0.502" material="mat_shell_dark" contype="0" conaffinity="0"/>
+
+      <!-- Orange — active spool, seated on the rollers and feeding the toolhead -->
+      <geom name="spool_axle" type="cylinder" size="0.004 0.022" pos="0.135 0.02 0.524" euler="0 1.5708 0" material="mat_rail" contype="0" conaffinity="0"/>
+      <geom name="spool_roll_f" type="cylinder" size="0.006 0.012" pos="0.135 -0.012 0.492" euler="0 1.5708 0" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="spool_roll_b" type="cylinder" size="0.006 0.012" pos="0.135  0.052 0.492" euler="0 1.5708 0" material="mat_shell" contype="0" conaffinity="0"/>
+      <geom name="spool_barrel" type="cylinder" size="0.026 0.014" pos="0.135 0.02 0.524" euler="0 1.5708 0" material="mat_spool" contype="0" conaffinity="0"/>
+      <geom name="spool_flange_L" type="cylinder" size="0.036 0.002" pos="0.117 0.02 0.524" euler="0 1.5708 0" material="mat_spool" contype="0" conaffinity="0"/>
+      <geom name="spool_flange_R" type="cylinder" size="0.036 0.002" pos="0.153 0.02 0.524" euler="0 1.5708 0" material="mat_spool" contype="0" conaffinity="0"/>
+      <geom name="spool_hub" type="cylinder" size="0.012 0.016" pos="0.135 0.02 0.524" euler="0 1.5708 0" rgba="0.45 0.12 0.04 1" contype="0" conaffinity="0"/>
+      <geom name="feeder_active" type="box" size="0.020 0.016 0.020" pos="0.135 -0.055 0.502" material="mat_shell_dark" contype="0" conaffinity="0"/>
+      <!-- Leaves the front of the orange spool into its feeder. -->
+      <site name="spool_exit_site" pos="0.135 -0.006 0.510"
+            size="0.002" rgba="0.9 0.28 0.1 0.6" group="3"/>
 
       <!-- ─────────────────────────────────────────────────────────── -->
       <!--  Z-AXIS: HEATED BED ON LEAD-SCREW SLIDE                    -->
@@ -195,31 +264,6 @@
         <!-- Nozzle contact detection site (on bed surface) -->
         <site name="bed_surface_centre" pos="0 0 0.004" size="0.002"
               rgba="1 0 0 0" group="3"/>
-
-        <!-- ─────────────────────────────────────────────── -->
-        <!--  PRINTED OBJECT: 5 cm test cube on bed          -->
-        <!-- ─────────────────────────────────────────────── -->
-        <!--  Pre-allocated layers for dynamic growth (1cm each) -->
-        <!-- Layer 1 (0 to 1 cm) -->
-        <geom name="print_layer_1" type="box" size="0.025 0.025 0.005"
-              pos="0 0 0.009" material="mat_print_obj" rgba="0.88 0.12 0.12 0"
-              contype="0" conaffinity="0"/>
-        <!-- Layer 2 (1 to 2 cm) -->
-        <geom name="print_layer_2" type="box" size="0.025 0.025 0.005"
-              pos="0 0 0.019" material="mat_print_obj" rgba="0.88 0.12 0.12 0"
-              contype="0" conaffinity="0"/>
-        <!-- Layer 3 (2 to 3 cm) -->
-        <geom name="print_layer_3" type="box" size="0.025 0.025 0.005"
-              pos="0 0 0.029" material="mat_print_obj" rgba="0.88 0.12 0.12 0"
-              contype="0" conaffinity="0"/>
-        <!-- Layer 4 (3 to 4 cm) -->
-        <geom name="print_layer_4" type="box" size="0.025 0.025 0.005"
-              pos="0 0 0.039" material="mat_print_obj" rgba="0.88 0.12 0.12 0"
-              contype="0" conaffinity="0"/>
-        <!-- Layer 5 (4 to 5 cm) -->
-        <geom name="print_layer_5" type="box" size="0.025 0.025 0.005"
-              pos="0 0 0.049" material="mat_print_obj" rgba="0.88 0.12 0.12 0"
-              contype="0" conaffinity="0"/>
       </body>
 
       <!-- ─────────────────────────────────────────────────────────── -->
@@ -261,19 +305,19 @@
             <!--  TOOLHEAD / EXTRUDER ASSEMBLY                   -->
             <!-- ─────────────────────────────────────────────── -->
             <body name="toolhead" pos="0 0 -0.01">
-              <!-- Filament inlet site (top of extruder, for dynamic strand) -->
-              <site name="toolhead_inlet_site" pos="0 0 0.022"
-                    size="0.002" rgba="0.9 0.1 0.1 0.5" group="3"/>
-
               <!-- Extruder motor + gears housing -->
               <geom name="extruder_housing" type="box"
                     size="0.018 0.022 0.02" pos="0 0 0"
                     mass="0.12" material="mat_toolhead"/>
 
-              <!-- Filament entry funnel (visual, on top of extruder) -->
-              <geom name="filament_funnel" type="cylinder" size="0.005 0.003"
-                    pos="0 0 0.023" material="mat_spool_bracket"
-                    contype="0" conaffinity="0"/>
+              <!-- Feed port on the rear face, where the extruder motor pulls filament in.
+                   The gantry beam covers the top of the housing, so the strand
+                   enters from behind instead of disappearing into the beam. -->
+              <geom name="filament_port" type="cylinder" size="0.0032 0.006"
+                    pos="0 0.028 0.006" euler="1.5708 0 0"
+                    material="mat_spool_bracket" contype="0" conaffinity="0"/>
+              <site name="toolhead_inlet_site" pos="0 0.034 0.006"
+                    size="0.002" rgba="0.9 0.1 0.1 0.5" group="3"/>
 
               <!-- Heat-sink fins (visual stack) -->
               <geom name="heatsink_1" type="box" size="0.016 0.016 0.001"

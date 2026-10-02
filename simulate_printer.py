@@ -16,6 +16,7 @@ Requires: mujoco >= 3.0, numpy
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import re
@@ -24,6 +25,28 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+# #region agent log
+_DEBUG_LOG_PATH = "/Users/manmitsingh/.cursor/debug-logs/debug-abcdc9.log"
+
+
+DEBUG_RUN_ID = "post-fix"
+
+
+def _agent_log(hypothesis_id: str, location: str, message: str, data: dict, run_id: str | None = None):
+    run_id = run_id or DEBUG_RUN_ID
+    payload = {
+        "sessionId": "abcdc9",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload) + "\n")
+# #endregion
 
 import mujoco
 import mujoco.viewer
@@ -45,10 +68,14 @@ MAX_ACCEL_Z         = 0.500       # 500 mm/s²
 # In the MJCF the bed centre is at (0, 0) in XY.  Bed is 256×256 mm.
 GCODE_ORIGIN_OFFSET = np.array([-0.128, -0.128, 0.0])  # metres
 
-# Extrusion trace rendering
-FILAMENT_RADIUS  = 0.0003   # visual radius of deposited line (0.3 mm)
-FILAMENT_RGBA    = np.array([0.1, 0.55, 0.92, 0.92])
-MAX_TRACE_GEOMS  = 8000     # cap to avoid OOM on huge prints
+# Extrusion trace rendering (visual radius; slightly thicker than real 0.4 mm
+# line width so deposited paths read clearly in the viewer)
+FILAMENT_RADIUS  = 0.0008   # visual radius of deposited line (0.8 mm)
+FILAMENT_RGBA    = np.array([0.88, 0.14, 0.14, 1.0])
+# 1.75 mm filament from the spool into the extruder feed port
+STRAND_RADIUS    = 0.0009
+STRAND_RGBA      = np.array([0.90, 0.10, 0.10, 1.0])
+MAX_TRACE_GEOMS  = 70000    # 100 mm / 0.04 mm cylinder is ~40k chords
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -182,6 +209,7 @@ class Waypoint:
     z: float          # bed Z (negative = bed lowered)
     feedrate: float   # m/s
     extrude: bool     # True if E > 0 on this move
+    accel: Optional[float] = None  # m/s²; None uses the axis default
 
 
 @dataclass
@@ -271,9 +299,11 @@ def gcode_to_waypoints(moves: list[GCodeMove]) -> list[Waypoint]:
 class ExtrusionTrace:
     """Manages deposited-material capsule geoms in the MuJoCo scene."""
 
-    def __init__(self, max_geoms: int = MAX_TRACE_GEOMS):
+    def __init__(self, max_geoms: int = MAX_TRACE_GEOMS, min_step: float = 0.002):
         self.max_geoms = max_geoms
+        self.min_step = min_step
         self._segments: list[tuple[np.ndarray, np.ndarray]] = []  # (p0, p1)
+        self._z: list[float] = []
         self._last_pos: Optional[np.ndarray] = None
 
     def begin_segment(self, pos: np.ndarray):
@@ -286,69 +316,108 @@ class ExtrusionTrace:
             self._last_pos = pos.copy()
             return
         dist = np.linalg.norm(pos - self._last_pos)
-        if dist < 0.0003:       # don't add micro-segments
+        if dist < self.min_step:  # coalesce micro-steps into visible beads
             return
         if len(self._segments) < self.max_geoms:
             self._segments.append((self._last_pos.copy(), pos.copy()))
+            self._z.append(0.5 * (float(self._last_pos[2]) + float(pos[2])))
+            # #region agent log
+            if len(self._segments) in (1, 10, 100):
+                _agent_log("B", "simulate_printer.py:add_point", "trace segment added", {
+                    "n": len(self._segments),
+                    "p0": self._last_pos.tolist(),
+                    "p1": pos.tolist(),
+                    "dist": float(dist),
+                })
+            # #endregion
         self._last_pos = pos.copy()
 
     def end_segment(self):
         self._last_pos = None
 
-    def render(self, scene: mujoco.MjvScene):
-        """Inject capsule geoms into the MuJoCo visualisation scene."""
-        n_avail = scene.maxgeom - scene.ngeom
-        n_draw = min(len(self._segments), n_avail)
-        for i in range(n_draw):
-            p0, p1 = self._segments[i]
-            g = scene.geoms[scene.ngeom]
+    def _visible_ids(self) -> np.ndarray:
+        """Segment indices to draw.
 
-            # Capsule from p0 to p1
-            midpoint = 0.5 * (p0 + p1)
-            diff = p1 - p0
-            length = np.linalg.norm(diff)
+        A 0.04 mm layer stack is far finer than the bead, so once the path is
+        long only one ring per bead-width is drawn, plus the live top. Short
+        paths (a single layer, a small G-code file) are drawn in full.
+        """
+        n = len(self._segments)
+        if n == 0:
+            return np.empty(0, dtype=np.int64)
+        if n <= 2500 or len(self._z) != n:
+            return np.arange(n, dtype=np.int64)
+        z = np.asarray(self._z, dtype=np.float64)
+        dz = float(z[-1]) - z
+        pitch = 0.0012  # 1.2 mm, under the 1.6 mm visual bead
+        phase = np.mod(dz, pitch)
+        mask = (dz <= 0.0016) | (phase <= 8e-5)
+        mask[-1] = True
+        return np.flatnonzero(mask)
+
+    def render(self, scene: mujoco.MjvScene, origin: np.ndarray, rot: np.ndarray):
+        """Inject capsule geoms into the MuJoCo visualisation scene.
+
+        Segments are stored in bed-local coordinates; *origin* / *rot* map
+        them into the world so deposited material rides with the print bed.
+        """
+        n_avail = scene.maxgeom - scene.ngeom
+        draw_ids = self._visible_ids()
+        n_draw = min(len(draw_ids), n_avail)
+        rgba = np.asarray(FILAMENT_RGBA, dtype=np.float32)
+        world0 = None
+        # #region agent log
+        log_this = not hasattr(self, "_render_logged")
+        # #endregion
+        for i in draw_ids[:n_draw]:
+            p0, p1 = self._segments[i]
+            p0w = origin + rot @ p0
+            p1w = origin + rot @ p1
+            if world0 is None:
+                world0 = p0w
+            length = np.linalg.norm(p1w - p0w)
             if length < 1e-7:
                 continue
-
-            g.type = mujoco.mjtGeom.mjGEOM_CAPSULE
-            g.size[0] = FILAMENT_RADIUS
-            g.size[1] = length * 0.5   # half-length for capsule
-            g.size[2] = 0.0
-
-            # Position at midpoint
-            g.pos[:] = midpoint
-
-            # Orientation: align capsule Z-axis with the segment direction
-            direction = diff / length
-            # Build rotation matrix
-            z_axis = direction
-            # Choose a non-parallel vector for cross product
-            up = np.array([0.0, 0.0, 1.0])
-            if abs(np.dot(z_axis, up)) > 0.99:
-                up = np.array([1.0, 0.0, 0.0])
-            x_axis = np.cross(up, z_axis)
-            x_axis /= np.linalg.norm(x_axis)
-            y_axis = np.cross(z_axis, x_axis)
-
-            rot = np.zeros((3, 3))
-            rot[0, :] = x_axis
-            rot[1, :] = y_axis
-            rot[2, :] = z_axis
-            g.mat[:] = rot
-
+            if scene.ngeom >= scene.maxgeom:
+                break
+            g = scene.geoms[scene.ngeom]
+            mujoco.mjv_initGeom(
+                g,
+                mujoco.mjtGeom.mjGEOM_CAPSULE,
+                np.zeros(3),
+                np.zeros(3),
+                np.zeros(9),
+                rgba,
+            )
+            mujoco.mjv_connector(
+                g,
+                mujoco.mjtGeom.mjGEOM_CAPSULE,
+                FILAMENT_RADIUS,
+                p0w,
+                p1w,
+            )
             g.rgba[:] = FILAMENT_RGBA
-            g.emission = 0.15
+            g.emission = 0.2
             g.category = mujoco.mjtCatBit.mjCAT_DECOR
-            g.dataid = -1
-            g.objtype = mujoco.mjtObj.mjOBJ_UNKNOWN
-            g.objid = -1
-            g.texid = -1
-            g.texuniform = 0
-            g.texcoord = 0
-            g.segid = -1
-            g.modelrbound = 0
-
             scene.ngeom += 1
+        # #region agent log
+        if log_this:
+            self._render_logged = True
+            sample = None
+            if self._segments:
+                p0, p1 = self._segments[0]
+                sample = {"p0_local": p0.tolist(), "p1_local": p1.tolist()}
+            _agent_log("C", "simulate_printer.py:render", "user scene capacity", {
+                "maxgeom": int(scene.maxgeom),
+                "ngeom": int(scene.ngeom),
+                "n_avail": int(n_avail),
+                "n_segments": len(self._segments),
+                "n_draw": int(n_draw),
+                "sample": sample,
+                "sample_world0": world0.tolist() if world0 is not None else None,
+                "bed_origin": origin.tolist(),
+            })
+        # #endregion
 
     @property
     def count(self) -> int:
@@ -379,22 +448,42 @@ class PrinterSimulation:
         self.site_nozzle = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "nozzle_tip_site")
         self.site_spool_exit = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "spool_exit_site")
         self.site_toolhead_inlet = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "toolhead_inlet_site")
-        self.joint_z_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "bed_z")
-        
-        self.layer_geom_ids = []
-        for i in range(1, 6):
-            gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, f"print_layer_{i}")
-            if gid >= 0:
-                self.layer_geom_ids.append(gid)
+        self.joint_z_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "joint_z")
+        self.joint_z_id_xml = self.joint_z_id
+        self.joint_x_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "joint_x")
+        self.joint_y_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "joint_y")
+        self.qadr_x = int(self.model.jnt_qposadr[self.joint_x_id])
+        self.qadr_y = int(self.model.jnt_qposadr[self.joint_y_id])
+        self.qadr_z = int(self.model.jnt_qposadr[self.joint_z_id])
+        self.dof_x = int(self.model.jnt_dofadr[self.joint_x_id])
+        self.dof_y = int(self.model.jnt_dofadr[self.joint_y_id])
+        self.dof_z = int(self.model.jnt_dofadr[self.joint_z_id])
+        self.body_bed = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "bed_carriage")
 
-        # ── Parse G-code & generate waypoints ──
+        # #region agent log
+        _agent_log("A", "simulate_printer.py:init", "joint lookup", {
+            "joint_z_id_bed_z": int(self.joint_z_id),
+            "joint_z_id_xml": int(self.joint_z_id_xml),
+        })
+        # #endregion
         if gcode_path is not None:
             gcmoves = parse_gcode(gcode_path)
             self.waypoints = gcode_to_waypoints(gcmoves)
             print(f"[GCode] Parsed {len(gcmoves)} commands → {len(self.waypoints)} waypoints")
         else:
             self.waypoints = self._demo_waypoints()
-            print(f"[Demo] Using built-in demo path with {len(self.waypoints)} waypoints")
+            print(f"[Demo] {len(self.waypoints)} waypoints")
+        # #region agent log
+        n_ext = sum(1 for w in self.waypoints if w.extrude)
+        zs = [w.z for w in self.waypoints]
+        _agent_log("A", "simulate_printer.py:waypoints", "waypoint extrusion stats", {
+            "n_waypoints": len(self.waypoints),
+            "n_extrude": n_ext,
+            "z_min": float(min(zs) if zs else 0),
+            "z_max": float(max(zs) if zs else 0),
+            "gcode": str(gcode_path) if gcode_path else "demo",
+        })
+        # #endregion
 
         # ── State ──
         self.current_wp_idx = 0
@@ -402,7 +491,9 @@ class PrinterSimulation:
         self.current_profile: Optional[TrapezoidSegment] = None
         self.move_start_pos = np.zeros(3)
         self.move_end_pos = np.zeros(3)
-        self.trace = ExtrusionTrace()
+        # Chords on the cylinder are ~8 mm; keep one bead per chord.
+        trace_step = 0.007 if gcode_path is None else 0.002
+        self.trace = ExtrusionTrace(min_step=trace_step)
         self.is_extruding = False
         self._finished = False
 
@@ -413,41 +504,38 @@ class PrinterSimulation:
     # ── Built-in demo path (used when no G-code file is given) ──────
     @staticmethod
     def _demo_waypoints() -> list[Waypoint]:
-        """Generate a spirograph-like demo path to showcase the printer."""
-        wps = []
-        # Home
-        wps.append(Waypoint(0, 0, 0, MAX_VELOCITY_XY, False))
-        # Lower bed for first layer
-        wps.append(Waypoint(0, 0, -0.002, MAX_VELOCITY_Z, False))
+        """Single-wall cylinder, vase-mode spiral.
 
-        # Draw a star pattern
-        n_points = 7
-        outer_r = 0.08   # 80 mm
-        inner_r = 0.03   # 30 mm
-        for i in range(n_points * 2 + 1):
-            angle = i * math.pi / n_points
-            r = outer_r if i % 2 == 0 else inner_r
-            x = r * math.cos(angle)
-            y = r * math.sin(angle)
-            wps.append(Waypoint(x, y, -0.002, 0.10, True))
+        Height 100 mm, layer pitch 0.04 mm (2500 layers). The head travels to
+        the wall with extrusion off, then climbs one layer per revolution.
+        Diameter is 40 mm so the tube sits clearly inside the 256 mm bed.
+        """
+        height = 0.100
+        layer = 0.00004
+        radius = 0.020
+        n_layers = int(round(height / layer))
+        n_seg = 16
+        n_steps = (n_layers - 1) * n_seg
+        feed = 0.40
+        accel = 400.0
+        print(f"[Demo] Cylinder Ø{radius * 2000:.0f} mm × {height * 1000:.0f} mm, "
+              f"layer {layer * 1000:.2f} mm ({n_layers} layers)")
 
-        # Concentric circles (3 layers)
-        for layer in range(3):
-            z = -(0.002 + layer * 0.002)
-            for r in [0.04, 0.06, 0.08, 0.10]:
-                n_seg = 60
-                for i in range(n_seg + 1):
-                    angle = 2 * math.pi * i / n_seg
-                    x = r * math.cos(angle)
-                    y = r * math.sin(angle)
-                    wps.append(Waypoint(x, y, z, 0.12, True))
-                # Retract between circles
-                wps.append(Waypoint(
-                    r * math.cos(0), r * math.sin(0), z, 0.05, False))
-
-        # Return home
-        wps.append(Waypoint(0, 0, -0.01, MAX_VELOCITY_XY, False))
-        wps.append(Waypoint(0, 0, 0, MAX_VELOCITY_Z, False))
+        wps: list[Waypoint] = [Waypoint(0, 0, 0, MAX_VELOCITY_XY, False)]
+        for i in range(n_steps + 1):
+            frac = i / n_steps
+            z_height = layer + (height - layer) * frac
+            ang = 2.0 * math.pi * i / n_seg
+            x = radius * math.cos(ang)
+            y = radius * math.sin(ang)
+            z = -z_height
+            if i == 0:
+                wps.append(Waypoint(x, y, z, MAX_VELOCITY_XY, False))
+            else:
+                wps.append(Waypoint(x, y, z, feed, True, accel))
+        # Park beside the finished tube. Leave the bed down so the 100 mm
+        # wall stays visible under the nozzle.
+        wps.append(Waypoint(0.06, 0.0, -height, MAX_VELOCITY_XY, False))
         return wps
 
     # ── Motion planning ────────────────────────────────────────────
@@ -471,7 +559,9 @@ class PrinterSimulation:
         distance = np.linalg.norm(delta)
 
         # Choose acceleration limit based on dominant axis
-        if abs(delta[2]) > 0 and abs(delta[0]) < 1e-6 and abs(delta[1]) < 1e-6:
+        if wp.accel is not None:
+            accel = wp.accel
+        elif abs(delta[2]) > 0 and abs(delta[0]) < 1e-6 and abs(delta[1]) < 1e-6:
             accel = MAX_ACCEL_Z
         else:
             accel = MAX_ACCEL_XY
@@ -482,8 +572,7 @@ class PrinterSimulation:
         # Extrusion state
         self.is_extruding = wp.extrude
         if self.is_extruding:
-            nozzle_pos = self._nozzle_world_pos()
-            self.trace.begin_segment(nozzle_pos)
+            self.trace.begin_segment(self._deposit_pos())
         else:
             self.trace.end_segment()
 
@@ -491,6 +580,99 @@ class PrinterSimulation:
         """Get the nozzle tip position in world coordinates from the sensor."""
         adr = self.model.sensor_adr[self.sens_nozzle]
         return self.data.sensordata[adr:adr+3].copy()
+
+    def _bed_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        origin = self.data.xpos[self.body_bed]
+        rot = self.data.xmat[self.body_bed].reshape(3, 3)
+        return origin, rot
+
+    def _deposit_pos(self) -> np.ndarray:
+        """Filament pose in the bed frame: nozzle XY, layer-height Z on the bed."""
+        origin, rot = self._bed_pose()
+        local = rot.T @ (self._nozzle_world_pos() - origin)
+        print_height = 0.0
+        if self.joint_z_id >= 0:
+            print_height = -float(self.data.qpos[self.model.jnt_qposadr[self.joint_z_id]])
+        # Bed surface is 4 mm above bed_carriage origin (print_bed top).
+        local[2] = 0.004 + FILAMENT_RADIUS + print_height
+        return local
+
+    def _render_feed_filament(self, scene: mujoco.MjvScene) -> None:
+        """1.75 mm strand from the spool into the extruder feed port.
+
+        It leaves the spool rim, runs behind the frame at the toolhead's X,
+        then drops in from the rear and stops at the port on the back of the
+        extruder housing. The gantry beam covers the top of the housing, so
+        the strand feeds the motor from behind that beam.
+        """
+        if self.site_spool_exit < 0 or self.site_toolhead_inlet < 0:
+            return
+        spool = self.data.site_xpos[self.site_spool_exit]
+        inlet = self.data.site_xpos[self.site_toolhead_inlet]
+        # Orange AMS spool → its feeder, back through the rear slot, then
+        # down to the toolhead. The lower bend still enters the feed port
+        # from behind the gantry beam.
+        feeder = np.array([0.135, -0.050, 0.500])
+        guide = np.array([0.135, 0.155, 0.470])
+        drop = np.array([0.135, 0.165, 0.395])
+        rail = np.array([float(inlet[0]), 0.168, 0.392])
+        hover = np.array([float(inlet[0]), float(inlet[1]) + 0.055, 0.400])
+        mouth = np.array([float(inlet[0]), float(inlet[1]) + 0.016, float(inlet[2])])
+        # Bend stays behind the gantry beam and the housing, then runs
+        # straight into the feed port.
+        ctrl = np.array([float(inlet[0]), float(inlet[1]) + 0.038, 0.390])
+        points = [spool, feeder, guide, drop, rail, hover]
+        for t in np.linspace(0.0, 1.0, 6)[1:]:
+            omt = 1.0 - t
+            points.append(omt * omt * hover + 2.0 * omt * t * ctrl + t * t * mouth)
+        points.append(inlet)
+
+        rgba = np.asarray(STRAND_RGBA, dtype=np.float32)
+        for p0, p1 in zip(points, points[1:]):
+            if scene.ngeom >= scene.maxgeom:
+                return
+            if np.linalg.norm(p1 - p0) < 1e-6:
+                continue
+            g = scene.geoms[scene.ngeom]
+            mujoco.mjv_initGeom(
+                g,
+                mujoco.mjtGeom.mjGEOM_CAPSULE,
+                np.zeros(3),
+                np.zeros(3),
+                np.zeros(9),
+                rgba,
+            )
+            mujoco.mjv_connector(
+                g,
+                mujoco.mjtGeom.mjGEOM_CAPSULE,
+                STRAND_RADIUS,
+                np.asarray(p0, dtype=np.float64),
+                np.asarray(p1, dtype=np.float64),
+            )
+            g.rgba[:] = STRAND_RGBA
+            g.emission = 0.15
+            g.category = mujoco.mjtCatBit.mjCAT_DECOR
+            scene.ngeom += 1
+
+    def _write_ctrl(self, target: np.ndarray) -> None:
+        self.data.ctrl[self.act_x] = target[0]
+        self.data.ctrl[self.act_y] = target[1]
+        self.data.ctrl[self.act_z] = target[2]
+
+    def _hold_command(self) -> None:
+        """Put the carriages on the position command.
+
+        Fast-forward steps the trajectory faster than the position servo can
+        track. Planting qpos keeps the nozzle on the cylinder instead of
+        lagging into a smaller, smeared path.
+        """
+        self.data.qpos[self.qadr_x] = self.data.ctrl[self.act_x]
+        self.data.qpos[self.qadr_y] = self.data.ctrl[self.act_y]
+        self.data.qpos[self.qadr_z] = self.data.ctrl[self.act_z]
+        self.data.qvel[self.dof_x] = 0.0
+        self.data.qvel[self.dof_y] = 0.0
+        self.data.qvel[self.dof_z] = 0.0
+        mujoco.mj_forward(self.model, self.data)
 
     def _step_motion(self):
         """Advance the current move by one timestep."""
@@ -502,13 +684,11 @@ class PrinterSimulation:
 
         if self.move_time >= profile.total_time:
             # Move complete — snap to target
-            self.data.ctrl[self.act_x] = self.move_end_pos[0]
-            self.data.ctrl[self.act_y] = self.move_end_pos[1]
-            self.data.ctrl[self.act_z] = self.move_end_pos[2]
+            self._write_ctrl(self.move_end_pos)
+            self._hold_command()
 
             if self.is_extruding:
-                nozzle_pos = self._nozzle_world_pos()
-                self.trace.add_point(nozzle_pos)
+                self.trace.add_point(self._deposit_pos())
 
             self.current_wp_idx += 1
             self._begin_move()
@@ -519,28 +699,28 @@ class PrinterSimulation:
         frac = np.clip(frac, 0.0, 1.0)
         target = self.move_start_pos + frac * (self.move_end_pos - self.move_start_pos)
 
-        self.data.ctrl[self.act_x] = target[0]
-        self.data.ctrl[self.act_y] = target[1]
-        self.data.ctrl[self.act_z] = target[2]
+        self._write_ctrl(target)
+        self._hold_command()
 
-        # Record extrusion trace
+        # Record extrusion trace (bed-local so it rides with the printbed)
         if self.is_extruding:
-            nozzle_pos = self._nozzle_world_pos()
-            self.trace.add_point(nozzle_pos)
+            self.trace.add_point(self._deposit_pos())
 
-        # Update layer visibility based on Z-position of the bed
-        if hasattr(self, 'joint_z_id') and self.joint_z_id >= 0:
-            current_z = -self.data.qpos[self.model.jnt_qposadr[self.joint_z_id]]
-            for i, gid in enumerate(self.layer_geom_ids):
-                layer_start = i * 0.01
-                layer_end = (i + 1) * 0.01
-                if current_z <= layer_start:
-                    alpha = 0.0
-                elif current_z >= layer_end:
-                    alpha = 1.0
-                else:
-                    alpha = (current_z - layer_start) / 0.01
-                self.model.geom_rgba[gid, 3] = alpha
+        # #region agent log
+        if self.current_wp_idx in (1, 5, 20) and not getattr(self, "_layer_logged", set()).intersection({self.current_wp_idx}):
+            self._layer_logged = getattr(self, "_layer_logged", set())
+            self._layer_logged.add(self.current_wp_idx)
+            nozzle = self._nozzle_world_pos()
+            bed_q = float(self.data.qpos[self.model.jnt_qposadr[self.joint_z_id_xml]]) if self.joint_z_id_xml >= 0 else None
+            _agent_log("A", "simulate_printer.py:_step_motion", "nozzle vs bed", {
+                "joint_z_id": int(self.joint_z_id),
+                "bed_qpos": bed_q,
+                "nozzle": nozzle.tolist(),
+                "wp_idx": int(self.current_wp_idx),
+                "is_extruding": bool(self.is_extruding),
+                "trace_count": self.trace.count,
+            })
+        # #endregion
 
     # ── Main loop ──────────────────────────────────────────────────
     def run(self):
@@ -578,6 +758,28 @@ class PrinterSimulation:
         print(f"\n✓ Headless simulation complete — {step_count} steps in {elapsed:.2f}s"
               f"  ({step_count/elapsed:.0f} steps/s)")
         print(f"  Extrusion trace segments: {self.trace.count}")
+        # #region agent log
+        sample = None
+        if self.trace._segments:
+            p0, p1 = self.trace._segments[0]
+            sample = {"p0": p0.tolist(), "p1": p1.tolist()}
+        scn = mujoco.MjvScene(self.model, maxgeom=max(2000, self.trace.count + 16))
+        origin, rot = self._bed_pose()
+        self.trace.render(scn, origin, rot)
+        world0 = None
+        if self.trace._segments:
+            p0, _p1 = self.trace._segments[0]
+            world0 = (origin + rot @ p0).tolist()
+        _agent_log("A", "simulate_printer.py:_run_headless", "headless complete", {
+            "steps": step_count,
+            "trace_count": self.trace.count,
+            "joint_z_id": int(self.joint_z_id),
+            "sample_seg": sample,
+            "render_ngeom": int(scn.ngeom),
+            "bed_origin": origin.tolist(),
+            "sample_world0": world0,
+        })
+        # #endregion
 
     def _run_viewer(self):
         """Run with interactive mujoco.viewer."""
@@ -599,10 +801,16 @@ class PrinterSimulation:
                 show_right_ui=False,
             ) as viewer:
                 # Configure camera for a nice default view
-                viewer.cam.azimuth = 135
-                viewer.cam.elevation = -25
-                viewer.cam.distance = 0.65
-                viewer.cam.lookat[:] = [0.0, 0.0, 0.20]
+                viewer.cam.azimuth = 128
+                viewer.cam.elevation = -18
+                viewer.cam.distance = 1.15
+                viewer.cam.lookat[:] = [0.0, 0.0, 0.30]
+                # #region agent log
+                _agent_log("C", "simulate_printer.py:_run_viewer", "viewer scene init", {
+                    "maxgeom": int(viewer.user_scn.maxgeom),
+                    "ngeom": int(viewer.user_scn.ngeom),
+                })
+                # #endregion
 
                 while viewer.is_running():
                     t_loop_start = time.perf_counter()
@@ -610,54 +818,14 @@ class PrinterSimulation:
                     # Advance simulation
                     self._step_motion()
                     mujoco.mj_step(self.model, self.data)
+                    self._hold_command()
                     step_count += 1
 
-                    # Inject extrusion trace into the scene
-                    viewer.user_scn.ngeom = 0   # clear previous user geoms
-                    self.trace.render(viewer.user_scn)
-
-                    # --- Render Dynamic Filament Strand ---
-                    # Draw a capsule connecting spool exit to toolhead inlet
-                    if viewer.user_scn.ngeom < viewer.user_scn.maxgeom and self.site_spool_exit >= 0 and self.site_toolhead_inlet >= 0:
-                        p0 = self.data.site_xpos[self.site_spool_exit]
-                        p1 = self.data.site_xpos[self.site_toolhead_inlet]
-                        diff = p1 - p0
-                        length = np.linalg.norm(diff)
-                        if length > 1e-7:
-                            g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
-                            g.type = mujoco.mjtGeom.mjGEOM_CAPSULE
-                            g.size[0] = 0.0015   # 1.5mm radius
-                            g.size[1] = length * 0.5
-                            g.size[2] = 0.0
-                            g.pos[:] = 0.5 * (p0 + p1)
-                            
-                            z_axis = diff / length
-                            up = np.array([0.0, 0.0, 1.0])
-                            if abs(np.dot(z_axis, up)) > 0.99:
-                                up = np.array([1.0, 0.0, 0.0])
-                            x_axis = np.cross(up, z_axis)
-                            x_axis /= np.linalg.norm(x_axis)
-                            y_axis = np.cross(z_axis, x_axis)
-                            
-                            rot = np.zeros((3, 3))
-                            rot[0, :] = x_axis
-                            rot[1, :] = y_axis
-                            rot[2, :] = z_axis
-                            g.mat[:] = rot
-                            
-                            g.rgba[:] = np.array([0.9, 0.1, 0.1, 0.85]) # matching strand mat
-                            g.emission = 0.2
-                            g.category = mujoco.mjtCatBit.mjCAT_DECOR
-                            g.dataid = -1
-                            g.objtype = mujoco.mjtObj.mjOBJ_UNKNOWN
-                            g.objid = -1
-                            g.texid = -1
-                            g.texuniform = 0
-                            g.texcoord = 0
-                            g.segid = -1
-                            g.modelrbound = 0
-                            
-                            viewer.user_scn.ngeom += 1
+                    # Inject extrusion trace and the spool-to-extruder strand.
+                    viewer.user_scn.ngeom = 0
+                    origin, rot = self._bed_pose()
+                    self.trace.render(viewer.user_scn, origin, rot)
+                    self._render_feed_filament(viewer.user_scn)
 
                     viewer.sync()
 
@@ -679,46 +847,9 @@ class PrinterSimulation:
                         # Keep viewer alive after print finishes
                         while viewer.is_running():
                             viewer.user_scn.ngeom = 0
-                            self.trace.render(viewer.user_scn)
-                            
-                            # Keep rendering the dynamic strand while finished
-                            if viewer.user_scn.ngeom < viewer.user_scn.maxgeom and self.site_spool_exit >= 0 and self.site_toolhead_inlet >= 0:
-                                p0 = self.data.site_xpos[self.site_spool_exit]
-                                p1 = self.data.site_xpos[self.site_toolhead_inlet]
-                                diff = p1 - p0
-                                length = np.linalg.norm(diff)
-                                if length > 1e-7:
-                                    g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
-                                    g.type = mujoco.mjtGeom.mjGEOM_CAPSULE
-                                    g.size[0] = 0.0015
-                                    g.size[1] = length * 0.5
-                                    g.size[2] = 0.0
-                                    g.pos[:] = 0.5 * (p0 + p1)
-                                    z_axis = diff / length
-                                    up = np.array([0.0, 0.0, 1.0])
-                                    if abs(np.dot(z_axis, up)) > 0.99:
-                                        up = np.array([1.0, 0.0, 0.0])
-                                    x_axis = np.cross(up, z_axis)
-                                    x_axis /= np.linalg.norm(x_axis)
-                                    y_axis = np.cross(z_axis, x_axis)
-                                    rot = np.zeros((3, 3))
-                                    rot[0, :] = x_axis
-                                    rot[1, :] = y_axis
-                                    rot[2, :] = z_axis
-                                    g.mat[:] = rot
-                                    g.rgba[:] = np.array([0.9, 0.1, 0.1, 0.85])
-                                    g.emission = 0.2
-                                    g.category = mujoco.mjtCatBit.mjCAT_DECOR
-                                    g.dataid = -1
-                                    g.objtype = mujoco.mjtObj.mjOBJ_UNKNOWN
-                                    g.objid = -1
-                                    g.texid = -1
-                                    g.texuniform = 0
-                                    g.texcoord = 0
-                                    g.segid = -1
-                                    g.modelrbound = 0
-                                    viewer.user_scn.ngeom += 1
-
+                            origin, rot = self._bed_pose()
+                            self.trace.render(viewer.user_scn, origin, rot)
+                            self._render_feed_filament(viewer.user_scn)
                             viewer.sync()
                             time.sleep(0.03)
                         break
